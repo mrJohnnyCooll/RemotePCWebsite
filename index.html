@@ -3,100 +3,327 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RemotePC</title>
 <style>
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  min-height: 100vh;
-  display: grid;
-  place-items: center;
-  background: #101114;
-  color: white;
-  font-family: Arial, sans-serif;
-}
-main {
-  width: min(420px, 92%);
-  padding: 30px;
-  background: #1b1d23;
-  border: 1px solid #30333d;
-  border-radius: 15px;
-}
-h1 { margin-top: 0; }
-p { color: #a8abb5; }
-input, button {
-  width: 100%;
-  padding: 13px;
-  margin-top: 12px;
-  border-radius: 8px;
-  font-size: 15px;
-}
-input {
-  color: white;
-  background: #101114;
-  border: 1px solid #414550;
-}
-button {
-  background: #6255e7;
-  color: white;
-  border: 0;
-  cursor: pointer;
-}
-#status { margin-top: 18px; }
+*{box-sizing:border-box}
+body{margin:0;background:#090b10;color:#f4f5f7;font-family:Arial,sans-serif;min-height:100vh;display:grid;place-items:center;padding:20px}
+main{width:min(900px,100%);background:#11151e;border:1px solid #252b38;border-radius:18px;padding:25px}
+h1{margin:0 0 6px;font-size:27px}
+.sub{color:#929bad;margin:0 0 24px}
+input{width:100%;padding:14px;background:#090d15;border:1px solid #30394a;border-radius:9px;color:white;font-size:16px;margin:8px 0 14px}
+button{padding:13px 17px;border:0;border-radius:9px;background:#647cf6;color:white;font-weight:bold;font-size:15px;cursor:pointer;margin:4px}
+button.secondary{background:#252d3c}
+button:disabled{opacity:.5;cursor:not-allowed}
+.status{color:#aab4c5;margin:15px 0;min-height:20px}
+video{width:100%;background:#050608;border-radius:12px;max-height:65vh;display:block}
+.row{display:flex;flex-wrap:wrap;gap:7px}
+.note{color:#8993a5;font-size:13px;line-height:1.5;margin-top:18px}
+#hostPreview{max-height:180px;margin-top:14px}
+.hidden{display:none}
 </style>
 </head>
 <body>
 <main>
   <h1>RemotePC</h1>
-  <p>Connect to your computer remotely.</p>
+  <p class="sub">Connect to your PC using your password.</p>
 
-  <input id="room" placeholder="Room code">
-  <input id="token" type="password" placeholder="Connection password">
+  <label for="password">Password</label>
+  <input id="password" type="password" placeholder="Enter password" autocomplete="current-password">
 
-  <button id="connect">Connect</button>
-  <p id="status">Disconnected</p>
+  <div class="row">
+    <button id="hostButton">Share this PC</button>
+    <button id="viewerButton" class="secondary">Connect to PC</button>
+    <button id="stopButton" class="secondary" disabled>Disconnect</button>
+    <button id="fullscreenButton" class="secondary">Fullscreen</button>
+  </div>
+
+  <div class="status" id="status">Not connected</div>
+
+  <video id="remoteVideo" autoplay playsinline controls></video>
+  <video id="hostPreview" autoplay muted playsinline class="hidden"></video>
+
+  <p class="note">
+    On your PC, choose Share this PC and approve the screen-sharing prompt.
+    On your other device, enter the same password and choose Connect to PC.
+    Keep the sharing page open while connected.
+  </p>
 </main>
 
 <script>
 const SERVER = "https://remotepc-server.howenapple08.workers.dev";
+const WS_SERVER = "wss://remotepc-server.howenapple08.workers.dev/connect";
 
-document.getElementById("connect").addEventListener("click", () => {
-  const room = document.getElementById("room").value.trim();
-  const token = document.getElementById("token").value.trim();
-  const status = document.getElementById("status");
+const passwordInput = document.getElementById("password");
+const statusBox = document.getElementById("status");
+const remoteVideo = document.getElementById("remoteVideo");
+const hostPreview = document.getElementById("hostPreview");
+const hostButton = document.getElementById("hostButton");
+const viewerButton = document.getElementById("viewerButton");
+const stopButton = document.getElementById("stopButton");
+const fullscreenButton = document.getElementById("fullscreenButton");
 
-  if (!room || !token) {
-    status.textContent = "Enter your room code and password.";
-    return;
+let socket = null;
+let pc = null;
+let localStream = null;
+let remoteCandidates = [];
+let role = null;
+let offerStarted = false;
+
+function status(text) {
+  statusBox.textContent = text;
+}
+
+function send(data) {
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify(data));
+  }
+}
+
+function makePeer() {
+  pc = new RTCPeerConnection({
+    iceServers: [
+      { urls: "stun:stun.l.google.com:19302" }
+    ]
+  });
+
+  pc.onicecandidate = event => {
+    if (event.candidate) {
+      send({ type: "ice", candidate: event.candidate });
+    }
+  };
+
+  pc.onconnectionstatechange = () => {
+    status("Connection: " + pc.connectionState);
+  };
+
+  pc.ontrack = event => {
+    remoteVideo.srcObject = event.streams[0];
+    remoteVideo.play().catch(() => {});
+    status("Screen connected");
+  };
+}
+
+async function connectSocket(selectedRole, onMessage) {
+  const password = passwordInput.value;
+
+  if (!password) {
+    throw new Error("Enter your password first.");
   }
 
-  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(room) || token.length < 32) {
-    status.textContent = "Invalid room code or password.";
-    return;
+  status("Checking password...");
+
+  const authResponse = await fetch(SERVER + "/auth", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      password,
+      role: selectedRole
+    })
+  });
+
+  const authData = await authResponse.json();
+
+  if (!authResponse.ok) {
+    throw new Error(authData.error || "Authentication failed.");
   }
 
-  const socketUrl = new URL("/connect", SERVER);
-  socketUrl.protocol = "wss:";
-  socketUrl.searchParams.set("room", room);
-  socketUrl.searchParams.set("token", token);
-  socketUrl.searchParams.set("role", "viewer");
+  status("Connecting to RemotePC server...");
 
-  status.textContent = "Connecting...";
+  const ws = new WebSocket(
+    WS_SERVER + "?ticket=" + encodeURIComponent(authData.ticket)
+  );
 
-  const socket = new WebSocket(socketUrl);
-
-  socket.onopen = () => {
-    status.textContent = "Connected to signaling server.";
+  ws.onmessage = event => {
+    try {
+      onMessage(JSON.parse(event.data));
+    } catch {}
   };
 
-  socket.onerror = () => {
-    status.textContent = "Connection failed.";
-  };
+  await new Promise((resolve, reject) => {
+    ws.onopen = resolve;
+    ws.onerror = () => reject(new Error("Could not connect to the server."));
+    ws.onclose = () => {
+      if (socket === ws) status("Disconnected");
+    };
+  });
 
-  socket.onclose = () => {
-    status.textContent = "Disconnected.";
-  };
+  socket = ws;
+  role = selectedRole;
+  stopButton.disabled = false;
+}
+
+async function addRemoteCandidate(candidate) {
+  if (!pc) return;
+
+  if (pc.remoteDescription) {
+    try {
+      await pc.addIceCandidate(candidate);
+    } catch (error) {
+      console.warn("ICE candidate error:", error);
+    }
+  } else {
+    remoteCandidates.push(candidate);
+  }
+}
+
+async function flushCandidates() {
+  const queued = remoteCandidates;
+  remoteCandidates = [];
+
+  for (const candidate of queued) {
+    try {
+      await pc.addIceCandidate(candidate);
+    } catch (error) {
+      console.warn("ICE candidate error:", error);
+    }
+  }
+}
+
+async function handleHostMessage(message) {
+  if (message.type === "peer-ready" && !offerStarted) {
+    offerStarted = true;
+    status("Viewer connected. Starting stream...");
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    send({
+      type: "offer",
+      sdp: pc.localDescription
+    });
+  }
+
+  if (message.type === "answer") {
+    await pc.setRemoteDescription(message.sdp);
+    await flushCandidates();
+    status("Viewer connected");
+  }
+
+  if (message.type === "ice" && message.candidate) {
+    await addRemoteCandidate(message.candidate);
+  }
+
+  if (message.type === "peer-left") {
+    status("Viewer disconnected");
+  }
+}
+
+async function handleViewerMessage(message) {
+  if (message.type === "offer") {
+    status("Receiving PC stream...");
+
+    await pc.setRemoteDescription(message.sdp);
+    await flushCandidates();
+
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+
+    send({
+      type: "answer",
+      sdp: pc.localDescription
+    });
+  }
+
+  if (message.type === "ice" && message.candidate) {
+    await addRemoteCandidate(message.candidate);
+  }
+
+  if (message.type === "peer-left") {
+    status("PC disconnected");
+  }
+}
+
+async function startHost() {
+  try {
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      throw new Error("Screen sharing is unavailable in this browser.");
+    }
+
+    status("Choose the screen you want to share...");
+
+    localStream = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: true
+    });
+
+    hostPreview.srcObject = localStream;
+    hostPreview.classList.remove("hidden");
+
+    makePeer();
+
+    for (const track of localStream.getTracks()) {
+      pc.addTrack(track, localStream);
+    }
+
+    localStream.getVideoTracks()[0].addEventListener("ended", stop);
+
+    await connectSocket("host", handleHostMessage);
+
+    status("Waiting for the other device to connect...");
+
+  } catch (error) {
+    stop();
+    status(error.message || "Could not start screen sharing.");
+  }
+}
+
+async function startViewer() {
+  try {
+    makePeer();
+
+    await connectSocket("viewer", handleViewerMessage);
+
+    status("Connected. Waiting for your PC...");
+
+  } catch (error) {
+    stop();
+    status(error.message || "Could not connect.");
+  }
+}
+
+function stop() {
+  offerStarted = false;
+  remoteCandidates = [];
+
+  if (socket) {
+    try {
+      send({ type: "bye" });
+      socket.close();
+    } catch {}
+  }
+
+  socket = null;
+
+  if (pc) {
+    pc.close();
+    pc = null;
+  }
+
+  if (localStream) {
+    localStream.getTracks().forEach(track => track.stop());
+    localStream = null;
+  }
+
+  remoteVideo.srcObject = null;
+  hostPreview.srcObject = null;
+  hostPreview.classList.add("hidden");
+  stopButton.disabled = true;
+  status("Disconnected");
+}
+
+hostButton.addEventListener("click", startHost);
+viewerButton.addEventListener("click", startViewer);
+stopButton.addEventListener("click", stop);
+
+fullscreenButton.addEventListener("click", () => {
+  if (remoteVideo.requestFullscreen) {
+    remoteVideo.requestFullscreen();
+  }
+});
+
+window.addEventListener("beforeunload", () => {
+  if (socket) socket.close();
 });
 </script>
 </body>
