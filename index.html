@@ -132,6 +132,8 @@ async function connectSocket(selectedRole, onMessage) {
 
   const ws = new WebSocket(
     WS_SERVER + "?ticket=" + encodeURIComponent(authData.ticket)
+  socket = ws;
+  role = selectedRole;
   );
 
   ws.onmessage = event => {
@@ -148,8 +150,6 @@ async function connectSocket(selectedRole, onMessage) {
     };
   });
 
-  socket = ws;
-  role = selectedRole;
   stopButton.disabled = false;
 }
 
