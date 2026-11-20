@@ -1,0 +1,103 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RemotePC</title>
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: #101114;
+  color: white;
+  font-family: Arial, sans-serif;
+}
+main {
+  width: min(420px, 92%);
+  padding: 30px;
+  background: #1b1d23;
+  border: 1px solid #30333d;
+  border-radius: 15px;
+}
+h1 { margin-top: 0; }
+p { color: #a8abb5; }
+input, button {
+  width: 100%;
+  padding: 13px;
+  margin-top: 12px;
+  border-radius: 8px;
+  font-size: 15px;
+}
+input {
+  color: white;
+  background: #101114;
+  border: 1px solid #414550;
+}
+button {
+  background: #6255e7;
+  color: white;
+  border: 0;
+  cursor: pointer;
+}
+#status { margin-top: 18px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>RemotePC</h1>
+  <p>Connect to your computer remotely.</p>
+
+  <input id="room" placeholder="Room code">
+  <input id="token" type="password" placeholder="Connection password">
+
+  <button id="connect">Connect</button>
+  <p id="status">Disconnected</p>
+</main>
+
+<script>
+const SERVER = "https://remotepc-server.howenapple08.workers.dev";
+
+document.getElementById("connect").addEventListener("click", () => {
+  const room = document.getElementById("room").value.trim();
+  const token = document.getElementById("token").value.trim();
+  const status = document.getElementById("status");
+
+  if (!room || !token) {
+    status.textContent = "Enter your room code and password.";
+    return;
+  }
+
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(room) || token.length < 32) {
+    status.textContent = "Invalid room code or password.";
+    return;
+  }
+
+  const socketUrl = new URL("/connect", SERVER);
+  socketUrl.protocol = "wss:";
+  socketUrl.searchParams.set("room", room);
+  socketUrl.searchParams.set("token", token);
+  socketUrl.searchParams.set("role", "viewer");
+
+  status.textContent = "Connecting...";
+
+  const socket = new WebSocket(socketUrl);
+
+  socket.onopen = () => {
+    status.textContent = "Connected to signaling server.";
+  };
+
+  socket.onerror = () => {
+    status.textContent = "Connection failed.";
+  };
+
+  socket.onclose = () => {
+    status.textContent = "Disconnected.";
+  };
+});
+</script>
+</body>
+</html>
